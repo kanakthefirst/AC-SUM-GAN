@@ -9,9 +9,13 @@ from tqdm import tqdm, trange
 from pathlib import Path
 
 from layers import Summarizer, Discriminator
-from utils import TensorboardWriter
+# from utils import TensorboardWriter
+from reward import compute_reward
 from layers.actor_critic import Actor, Critic
 from fragments import calculate_fragments
+
+
+import wandb
 
 # labels for training the GAN part of the model
 original_label = torch.tensor(1.0).cuda()
@@ -28,11 +32,12 @@ def compute_returns(next_value, rewards, masks, gamma=0.99):
     return returns
 
 class Solver(object):
-    def __init__(self, config=None, train_loader=None, test_loader=None):
+    def __init__(self, config=None, train_loader=None, test_loader=None, ckpt=None):
         """Class that Builds, Trains and Evaluates AC-SUM-GAN model"""
         self.config = config
         self.train_loader = train_loader
         self.test_loader = test_loader
+        self.ckpt = ckpt
 
     def build(self):
 
@@ -75,7 +80,7 @@ class Solver(object):
                                            lr=self.config.lr)
             self.optimizerC = optim.Adam(self.critic.parameters(), lr=self.config.lr)
 
-            self.writer = TensorboardWriter(str(self.config.log_dir))
+            # self.writer = TensorboardWriter(str(self.config.log_dir))
 
     def reconstruction_loss(self, h_origin, h_sum):
         """L2 loss between original-regenerated features at cLSTM's last hidden layer"""
@@ -193,8 +198,9 @@ class Solver(object):
     
                     reconstruction_loss = self.reconstruction_loss(h_origin, h_sum)
                     prior_loss = self.prior_loss(h_mu, h_log_variance)
-    
-                    tqdm.write(f'recon loss {reconstruction_loss.item():.3f}, prior loss: {prior_loss.item():.3f}')
+                    
+                    if self.config.verbose:
+                        tqdm.write(f'recon loss {reconstruction_loss.item():.3f}, prior loss: {prior_loss.item():.3f}')
     
                     e_loss = reconstruction_loss + prior_loss
                     e_loss = e_loss/self.config.batch_size
@@ -228,7 +234,8 @@ class Solver(object):
                     h_origin, original_prob = self.discriminator(original_features)
                     h_sum, sum_prob = self.discriminator(generated_features)
     
-                    tqdm.write(f'original_p: {original_prob.item():.3f}, summary_p: {sum_prob.item():.3f}')
+                    if self.config.verbose:
+                        tqdm.write(f'original_p: {original_prob.item():.3f}, summary_p: {sum_prob.item():.3f}')
     
                     reconstruction_loss = self.reconstruction_loss(h_origin, h_sum)
                     g_loss = self.criterion(sum_prob, original_label)
@@ -284,7 +291,8 @@ class Solver(object):
                     c_summary_loss = c_summary_loss/self.config.batch_size
                     c_summary_loss.backward()
                     
-                    tqdm.write(f'original_p: {original_prob.item():.3f}, summary_p: {sum_prob.item():.3f}')
+                    if self.config.verbose:
+                        tqdm.write(f'original_p: {original_prob.item():.3f}, summary_p: {sum_prob.item():.3f}')
                     
                     c_original_loss_history.append(c_original_loss.data)
                     c_summary_loss_history.append(c_summary_loss.data)
@@ -300,6 +308,7 @@ class Solver(object):
                 self.optimizerC.zero_grad()
                 for video in range(self.config.batch_size):
                     image_features = list_image_features[video]
+                    _seq = image_features.detach().clone()
                     action_fragments = list_action_fragments[video]
                     
                     # [seq_len, input_size]
@@ -327,6 +336,7 @@ class Solver(object):
                     masks = []
                     entropy = 0
     
+                    _actions = [0] * self.config.action_state_size
                     counter = 0
                     for ACstep in range(self.config.termination_point):
                         # select an action, get a value for the current state
@@ -354,10 +364,13 @@ class Solver(object):
                             h_origin, original_prob = self.discriminator(original_features)
                             h_sum, sum_prob = self.discriminator(generated_features)
     
-                            tqdm.write(f'original_p: {original_prob.item():.3f}, summary_p: {sum_prob.item():.3f}')
+                            if self.config.verbose:
+                                tqdm.write(f'original_p: {original_prob.item():.3f}, summary_p: {sum_prob.item():.3f}')
     
-                            rec_loss = self.reconstruction_loss(h_origin, h_sum)
-                            reward = 1 - rec_loss.item()  # the less the distance, the higher the reward
+                            # rec_loss = self.reconstruction_loss(h_origin, h_sum)
+                            # reward = 1 - rec_loss.item()  # the less the distance, the higher the reward
+                            _actions[action] = 1
+                            reward = compute_reward(_seq, _actions, alpha=0.5)
                             counter = counter + 1
     
                         next_state = state * action_fragment_scores
@@ -407,8 +420,11 @@ class Solver(object):
                     if self.config.verbose:
                         tqdm.write('Plotting...')
     
-                    self.writer.update_loss(original_prob.data, step, 'original_prob')
-                    self.writer.update_loss(sum_prob.data, step, 'sum_prob')
+                    # self.writer.update_loss(original_prob.data, step, 'original_prob')
+                    # self.writer.update_loss(sum_prob.data, step, 'sum_prob')
+
+                    wandb.log({"custom_step": step, "original_prob": original_prob.data})
+                    wandb.log({"custom_step": step, "sum_prob": sum_prob.data})
     
                     step += 1
                     
@@ -435,26 +451,44 @@ class Solver(object):
             # Plot
             if self.config.verbose:
                 tqdm.write('Plotting...')
-            self.writer.update_loss(recon_loss_init, epoch_i, 'recon_loss_init_epoch')
-            self.writer.update_loss(recon_loss, epoch_i, 'recon_loss_epoch')
-            self.writer.update_loss(prior_loss, epoch_i, 'prior_loss_epoch')    
-            self.writer.update_loss(g_loss, epoch_i, 'g_loss_epoch')    
-            self.writer.update_loss(e_loss, epoch_i, 'e_loss_epoch')
-            self.writer.update_loss(d_loss, epoch_i, 'd_loss_epoch')
-            self.writer.update_loss(c_original_loss, epoch_i, 'c_original_loss_epoch')
-            self.writer.update_loss(c_summary_loss, epoch_i, 'c_summary_loss_epoch')
-            self.writer.update_loss(sparsity_loss, epoch_i, 'sparsity_loss_epoch')
-            self.writer.update_loss(actor_loss, epoch_i, 'actor_loss_epoch')
-            self.writer.update_loss(critic_loss, epoch_i, 'critic_loss_epoch')
-            self.writer.update_loss(reward, epoch_i, 'reward_epoch')
+            # self.writer.update_loss(recon_loss_init, epoch_i, 'recon_loss_init_epoch')
+            # self.writer.update_loss(recon_loss, epoch_i, 'recon_loss_epoch')
+            # self.writer.update_loss(prior_loss, epoch_i, 'prior_loss_epoch')    
+            # self.writer.update_loss(g_loss, epoch_i, 'g_loss_epoch')    
+            # self.writer.update_loss(e_loss, epoch_i, 'e_loss_epoch')
+            # self.writer.update_loss(d_loss, epoch_i, 'd_loss_epoch')
+            # self.writer.update_loss(c_original_loss, epoch_i, 'c_original_loss_epoch')
+            # self.writer.update_loss(c_summary_loss, epoch_i, 'c_summary_loss_epoch')
+            # self.writer.update_loss(sparsity_loss, epoch_i, 'sparsity_loss_epoch')
+            # self.writer.update_loss(actor_loss, epoch_i, 'actor_loss_epoch')
+            # self.writer.update_loss(critic_loss, epoch_i, 'critic_loss_epoch')
+            # self.writer.update_loss(reward, epoch_i, 'reward_epoch')
 
-            # Save parameters at checkpoint
-            ckpt_path = str(self.config.save_dir) + f'/epoch-{epoch_i}.pkl'
+            wandb.log({"custom_step": epoch_i, "recon_loss_init_epoch": recon_loss_init})
+            wandb.log({"custom_step": epoch_i, "recon_loss_epoch": recon_loss})
+            wandb.log({"custom_step": epoch_i, "prior_loss_epoch": prior_loss})
+            wandb.log({"custom_step": epoch_i, "g_loss_epoch": g_loss})
+            wandb.log({"custom_step": epoch_i, "e_loss_epoch": e_loss})
+            wandb.log({"custom_step": epoch_i, "d_loss_epoch": d_loss})
+            wandb.log({"custom_step": epoch_i, "c_original_loss_epoch": c_original_loss})
+            wandb.log({"custom_step": epoch_i, "c_summary_loss_epoch": c_summary_loss})
+            wandb.log({"custom_step": epoch_i, "sparsity_loss_epoch": sparsity_loss})
+            wandb.log({"custom_step": epoch_i, "actor_loss_epoch": actor_loss})
+            wandb.log({"custom_step": epoch_i, "critic_loss_epoch": critic_loss})
+            wandb.log({"custom_step": epoch_i, "reward_epoch": reward})
+            
+            self.evaluate(epoch_i)
+            ckpt_path = str(self.config.save_dir) + f'/{self.ckpt}.pkl'
             if self.config.verbose:
                 tqdm.write(f'Save parameters at {ckpt_path}')
-            torch.save(self.model.state_dict(), ckpt_path)
+                torch.save(self.model.state_dict(), ckpt_path)
 
-            self.evaluate(epoch_i)
+
+        # Save parameters at checkpoint
+        # ckpt_path = str(self.config.save_dir) + f'/{self.ckpt}.pkl'
+        # if self.config.verbose:
+        #     tqdm.write(f'Save parameters at {ckpt_path}')
+        # torch.save(self.model.state_dict(), ckpt_path)
 
     def evaluate(self, epoch_i):
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pprint
 import math
 
-save_dir = Path('../exp1')
+save_dir = Path('/content/drive/MyDrive/AC-SUM-GAN/exp1')
 
 def str2bool(v):
     """string to boolean"""
@@ -68,6 +68,8 @@ def get_config(parse=True, **optional_kwargs):
     parser.add_argument('--split_index', type=int, default=0)
     parser.add_argument('--action_state_size', type=int, default=60)
     
+    parser.add_argument('--ckpt', type=str, default='run-0')
+
     if parse:
         kwargs = parser.parse_args()
     else:

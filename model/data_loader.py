@@ -24,9 +24,9 @@ class VideoData(Dataset):
     def __init__(self, mode, split_index, action_state_size):
         self.mode = mode
         self.name = 'tvsum'
-        self.datasets = ['../data/SumMe/eccv16_dataset_summe_google_pool5.h5',
-                         '../data/TVSum/eccv16_dataset_tvsum_google_pool5.h5']
-        self.splits_filename = ['../data/splits/' + self.name + '_splits.json']
+        self.datasets = ['/content/drive/MyDrive/AC-SUM-GAN/data/SumMe/eccv16_dataset_summe_google_pool5.h5',
+                         '/content/drive/MyDrive/AC-SUM-GAN/data/TVSum/eccv16_dataset_tvsum_google_pool5.h5']
+        self.splits_filename = ['/content/drive/MyDrive/AC-SUM-GAN/data/splits/' + self.name + '_splits.json']
         self.split_index = split_index # it represents the current split (varies from 0 to 4)
 
         if 'summe' in self.splits_filename[0]:

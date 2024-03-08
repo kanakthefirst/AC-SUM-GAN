@@ -18,7 +18,7 @@ eval_method = 'avg'''
 
 results = listdir(path)
 results.sort(key=lambda video: int(video[6:-5]))
-HOME_PATH = <path_to_datasets_dir>
+HOME_PATH = "../data/"
 DATASET_PATH= HOME_PATH + dataset + '/eccv16_dataset_' + dataset.lower() + '_google_pool5.h5'
 
 # for each epoch, read the results' file and compute the f_score
